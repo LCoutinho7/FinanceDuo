@@ -400,6 +400,22 @@ html,body{font-family:var(--f-body);background:var(--bg0);color:var(--txt1);min-
       <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="doLogin()" id="btn-login">
         <i class="bi bi-box-arrow-in-right"></i> Entrar
       </button>
+      <button class="btn btn-ghost" style="margin-top:12px;width:100%;justify-content:center" onclick="showAuthForm('reset')">
+        <i class="bi bi-question-circle"></i> Esqueci minha senha
+      </button>
+    </div>
+
+    <div id="form-reset" style="display:none">
+      <div class="field">
+        <label class="label">E-mail cadastrado</label>
+        <input type="email" class="input" id="reset-email" placeholder="seu@email.com">
+      </div>
+      <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="doResetPassword()" id="btn-reset">
+        <i class="bi bi-envelope"></i> Enviar link de redefinição
+      </button>
+      <button class="btn btn-ghost" style="margin-top:12px;width:100%;justify-content:center" onclick="showAuthForm('login')">
+        Voltar ao login
+      </button>
     </div>
 
     <!-- Register -->
@@ -1027,6 +1043,7 @@ function showAuth() {
 window.showAuthForm = function(form) {
   document.getElementById('form-login').style.display    = form === 'login'    ? 'block' : 'none';
   document.getElementById('form-register').style.display = form === 'register' ? 'block' : 'none';
+  document.getElementById('form-reset').style.display    = form === 'reset' ? 'block' : 'none';
   document.getElementById('tab-login').classList.toggle('active', form === 'login');
   document.getElementById('tab-register').classList.toggle('active', form === 'register');
 };
@@ -1053,6 +1070,23 @@ window.doRegister = async function() {
   btn.disabled = false;
   if (error) { toast(error.message, 'r'); return; }
   toast('Conta criada! Verifique seu e-mail ou faça login.', 'g');
+  showAuthForm('login');
+};
+
+window.doResetPassword = async function() {
+  const email = document.getElementById('reset-email').value.trim();
+  const btn = document.getElementById('btn-reset');
+  if (!email) { toast('Informe o e-mail cadastrado', 'w'); return; }
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-repeat" style="animation:spin .8s linear infinite"></i> Enviando...';
+  const { error } = await sb.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin
+  });
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-envelope"></i> Enviar link de redefinição';
+  if (error) { toast(error.message, 'r'); return; }
+  toast('Verifique seu e-mail para redefinir a senha.', 'g');
+  document.getElementById('reset-email').value = '';
   showAuthForm('login');
 };
 
