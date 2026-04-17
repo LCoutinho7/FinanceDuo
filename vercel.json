@@ -3,23 +3,13 @@
   "name": "financasduo",
   "builds": [
     {
-      "src": "frontend/**",
+      "src": "index.html",
       "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/frontend/$1"
-    },
-    {
-      "src": "/",
-      "dest": "/frontend/index.html"
     }
   ],
   "headers": [
     {
-      "source": "/(.*)",
+      "source": "(.*)",
       "headers": [
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "X-Frame-Options", "value": "DENY" },
