@@ -4,13 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>FinançasDuo</title>
-
-<link href="assets/favicon.jpeg" rel="icon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,400;12..96,500;12..96,700;12..96,800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
 <style>
@@ -84,15 +81,7 @@ html,body{font-family:var(--f-body);background:var(--bg0);color:var(--txt1);min-
 }
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 
-.auth-logo {
-  font-family: var(--f-display);
-  font-size: 26px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  margin-bottom: 10%;
-  text-align: center;
-}
-
+.auth-logo{font-family:var(--f-display);font-size:26px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px}
 .auth-logo b{color:var(--b)}
 .auth-sub{font-size:13px;color:var(--txt2);margin-bottom:32px}
 
@@ -381,6 +370,7 @@ html,body{font-family:var(--f-body);background:var(--bg0);color:var(--txt1);min-
 <div id="auth-page" style="display:none">
   <div class="auth-card">
     <div class="auth-logo">Finanças<b>Duo</b></div>
+    <p class="auth-sub">Controle financeiro do casal 💑</p>
 
     <div class="auth-tabs">
       <button class="auth-tab active" id="tab-login" onclick="showAuthForm('login')">Entrar</button>
@@ -400,22 +390,12 @@ html,body{font-family:var(--f-body);background:var(--bg0);color:var(--txt1);min-
       <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="doLogin()" id="btn-login">
         <i class="bi bi-box-arrow-in-right"></i> Entrar
       </button>
-      <button class="btn btn-ghost" style="margin-top:12px;width:100%;justify-content:center" onclick="showAuthForm('reset')">
-        <i class="bi bi-question-circle"></i> Esqueci minha senha
-      </button>
-    </div>
-
-    <div id="form-reset" style="display:none">
-      <div class="field">
-        <label class="label">E-mail cadastrado</label>
-        <input type="email" class="input" id="reset-email" placeholder="seu@email.com">
+      <div style="margin-top:16px;text-align:center;padding:12px;background:var(--bg1);border-radius:10px">
+        <p style="font-size:11px;color:var(--txt2);margin-bottom:6px">🧪 Contas de demo:</p>
+        <p style="font-size:11px;color:var(--txt3)">lucas@financasduo.com / Lucas2024!</p>
+        <p style="font-size:11px;color:var(--txt3)">leticia@financasduo.com / Leticia2024!</p>
+        <p style="font-size:11px;color:var(--txt2);margin-top:8px">⚠️ Configure o Supabase primeiro (veja o README)</p>
       </div>
-      <button class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px" onclick="doResetPassword()" id="btn-reset">
-        <i class="bi bi-envelope"></i> Enviar link de redefinição
-      </button>
-      <button class="btn btn-ghost" style="margin-top:12px;width:100%;justify-content:center" onclick="showAuthForm('login')">
-        Voltar ao login
-      </button>
     </div>
 
     <!-- Register -->
@@ -905,7 +885,15 @@ html,body{font-family:var(--f-body);background:var(--bg0);color:var(--txt1);min-
 
 <div id="toasts"></div>
 
-<script src="./config.js"></script>
+<!-- SUPABASE CONFIG — será substituído pelo setup.js -->
+<script>
+// ═══════════════════════════════════════════════════════════
+// CONFIGURAÇÃO DO SUPABASE
+// Substitua com suas credenciais do projeto Supabase
+// ═══════════════════════════════════════════════════════════
+window.SUPABASE_URL      = 'https://SEU_PROJETO.supabase.co';
+window.SUPABASE_ANON_KEY = 'SUA_ANON_KEY_AQUI';
+</script>
 
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
@@ -913,22 +901,7 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 // ═══════════════════════════════════════
 // SUPABASE CLIENT
 // ═══════════════════════════════════════
-const supabaseUrl = window.SUPABASE_URL;
-const supabaseAnonKey = window.SUPABASE_ANON_KEY;
-
-if (
-  !supabaseUrl ||
-  !supabaseAnonKey ||
-  supabaseUrl.includes('SEU_PROJETO') ||
-  supabaseAnonKey.includes('SUA_ANON_KEY')
-) {
-  document.getElementById('global-loader').style.display = 'none';
-  document.getElementById('auth-page').style.display = 'flex';
-  document.getElementById('app').style.display = 'none';
-  throw new Error('Supabase nao configurado. Edite o arquivo config.js com sua URL e anon key.');
-}
-
-const sb = createClient(supabaseUrl, supabaseAnonKey);
+const sb = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 // ═══════════════════════════════════════
 // STATE
@@ -1043,7 +1016,6 @@ function showAuth() {
 window.showAuthForm = function(form) {
   document.getElementById('form-login').style.display    = form === 'login'    ? 'block' : 'none';
   document.getElementById('form-register').style.display = form === 'register' ? 'block' : 'none';
-  document.getElementById('form-reset').style.display    = form === 'reset' ? 'block' : 'none';
   document.getElementById('tab-login').classList.toggle('active', form === 'login');
   document.getElementById('tab-register').classList.toggle('active', form === 'register');
 };
@@ -1073,23 +1045,6 @@ window.doRegister = async function() {
   showAuthForm('login');
 };
 
-window.doResetPassword = async function() {
-  const email = document.getElementById('reset-email').value.trim();
-  const btn = document.getElementById('btn-reset');
-  if (!email) { toast('Informe o e-mail cadastrado', 'w'); return; }
-  btn.disabled = true;
-  btn.innerHTML = '<i class="bi bi-arrow-repeat" style="animation:spin .8s linear infinite"></i> Enviando...';
-  const { error } = await sb.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin
-  });
-  btn.disabled = false;
-  btn.innerHTML = '<i class="bi bi-envelope"></i> Enviar link de redefinição';
-  if (error) { toast(error.message, 'r'); return; }
-  toast('Verifique seu e-mail para redefinir a senha.', 'g');
-  document.getElementById('reset-email').value = '';
-  showAuthForm('login');
-};
-
 window.doLogout = async function() {
   await sb.auth.signOut();
 };
@@ -1106,18 +1061,41 @@ window.doLinkPartner = async function() {
   const email = document.getElementById('link-email').value.trim().toLowerCase();
   if (!email) { toast('Informe o e-mail', 'w'); return; }
 
-  const { data: partner, error: fe } = await sb.from('profiles').select('id,name,email').eq('email', email).single();
-  if (fe || !partner) { toast('Parceiro(a) não encontrado. Verifique o e-mail.', 'r'); return; }
-  if (partner.id === S.user.id) { toast('Você não pode se vincular a si mesmo!', 'w'); return; }
+  // Busca o perfil pelo e-mail.
+  // Usa .maybeSingle() em vez de .single() para evitar erro 406 quando não encontra.
+  // O RLS de profiles permite SELECT de qualquer perfil (necessário para vincular).
+  const { data: partner, error: fe } = await sb
+    .from('profiles')
+    .select('id,name,email')
+    .ilike('email', email)   // ilike = case-insensitive, tolera diferença de maiúsculas
+    .maybeSingle();          // retorna null se não encontrar, em vez de lançar erro 406
 
-  // Check existing
-  const { data: ex } = await sb.from('couple_links')
+  if (fe) {
+    toast('Erro ao buscar parceiro(a): ' + fe.message, 'r');
+    return;
+  }
+  if (!partner) {
+    toast('Parceiro(a) não encontrado. O e-mail precisa ter conta criada no FinançasDuo.', 'r');
+    return;
+  }
+  if (partner.id === S.user.id) {
+    toast('Você não pode se vincular a si mesmo!', 'w');
+    return;
+  }
+
+  // Verifica vínculo existente — também com maybeSingle() para não estourar 406
+  const { data: ex } = await sb
+    .from('couple_links')
     .select('id')
     .or(`and(user_a_id.eq.${S.user.id},user_b_id.eq.${partner.id}),and(user_a_id.eq.${partner.id},user_b_id.eq.${S.user.id})`)
-    .single();
+    .maybeSingle();
+
   if (ex) { toast('Vocês já estão vinculados!', 'w'); return; }
 
-  const { error } = await sb.from('couple_links').insert({ user_a_id: S.user.id, user_b_id: partner.id });
+  const { error } = await sb
+    .from('couple_links')
+    .insert({ user_a_id: S.user.id, user_b_id: partner.id });
+
   if (error) { toast('Erro ao vincular: ' + error.message, 'r'); return; }
 
   S.partner = partner;
