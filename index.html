@@ -1110,13 +1110,29 @@ window.doLinkPartner = async function() {
 // ═══════════════════════════════════════
 async function loadAll() {
   setSyncStatus('syncing');
+
+  // Mostra skeleton nos containers principais enquanto carrega
+  const skeletonTx = '<div class="skeleton skeleton-row"></div>'.repeat(5);
+  const skeletonCard = '<div class="skeleton skeleton-card"></div>'.repeat(3);
+  const dashRecent = document.getElementById('dash-recent');
+  const dashBills  = document.getElementById('dash-bills');
+  if (dashRecent) dashRecent.innerHTML = skeletonTx;
+  if (dashBills)  dashBills.innerHTML  = skeletonTx;
+
   try {
+    // Carrega tudo em paralelo — mais rápido que sequencial
     await Promise.all([loadTransactions(), loadBills(), loadGoals(), loadBudgets()]);
     setSyncStatus('live');
   } catch(e) {
     setSyncStatus('offline');
-    toast('Erro ao carregar dados: ' + e.message, 'r');
+    toast('Erro ao carregar: ' + e.message + '. Verifique sua conexão.', 'r', 6000);
+    log('loadAll error', e);
   }
+}
+
+// Logger centralizado — facilita debug sem poluir produção
+function log(...args) {
+  if (window.FD_DEBUG) console.log('[FinançasDuo]', ...args);
 }
 
 async function loadTransactions() {
@@ -1168,19 +1184,29 @@ function setupRealtime() {
 
   S.realtimeChannel = sb.channel('app-changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, async (payload) => {
+      // Ignora eventos disparados pela própria ação local (optimistic já atualizou a UI)
+      // S._localOp é setado em saveTx/deleteTx e limpo após 2s
+      if (S._localOp) return;
       setSyncStatus('syncing');
       await loadTransactions();
       setSyncStatus('live');
       if (S.page === 'dashboard') renderDashboard();
       else if (S.page === 'transacoes') renderTx();
-      toast('Dados atualizados em tempo real', 'b');
+      // Toast somente quando a mudança veio do parceiro
+      const changedBy = payload?.new?.user_id || payload?.old?.user_id;
+      if (changedBy && changedBy !== S.user.id) {
+        toast('Parceiro(a) atualizou uma transação', 'b');
+      }
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'bills' }, async () => {
+      if (S._localOp) return;
       await loadBills();
       updateBillsBadge();
       if (S.page === 'boletos') renderBills();
+      else if (S.page === 'dashboard') renderDashBills();
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'goals' }, async () => {
+      if (S._localOp) return;
       await loadGoals();
       if (S.page === 'metas') renderGoals();
     })
@@ -1485,7 +1511,9 @@ window.renderTx = function() {
 // ═══════════════════════════════════════
 // TX MODAL
 // ═══════════════════════════════════════
-window.openTxModal = function(type='receita') {
+window.openTxModal = function(type) {
+  // Mantém o tipo da última operação se não for passado explicitamente
+  const useType = type || S.txType || 'despesa';
   document.getElementById('tx-edit-id').value = '';
   document.getElementById('modal-tx-title').textContent = 'Nova Transação';
   document.getElementById('tx-valor').value = '';
@@ -1494,8 +1522,10 @@ window.openTxModal = function(type='receita') {
   document.getElementById('tx-tags').value  = '';
   document.getElementById('tx-shared').value = 'false';
   document.getElementById('tx-pag').value   = 'pix';
-  setTxType(type);
+  setTxType(useType);
   document.getElementById('modal-tx').classList.add('show');
+  // Foca no campo valor automaticamente (agiliza entrada no mobile)
+  setTimeout(() => document.getElementById('tx-valor')?.focus(), 120);
 };
 
 window.editTx = function(id) {
@@ -1545,35 +1575,108 @@ window.saveTx = async function() {
   };
 
   const btn = document.getElementById('btn-save-tx');
-  btn.disabled = true;
-  try {
-    if (id) {
-      const { error } = await sb.from('transactions').update(payload).eq('id', id);
-      if (error) throw error;
-      toast('Transação atualizada!', 'g');
-    } else {
-      const { error } = await sb.from('transactions').insert({ ...payload, user_id: S.user.id });
-      if (error) throw error;
-      toast('Transação salva!', 'g');
-    }
-    closeModal('modal-tx');
-    await loadTransactions();
-    if (S.page === 'dashboard') renderDashboard();
-    else renderTx();
-  } catch(e) {
-    toast('Erro: ' + e.message, 'r');
+  btn.classList.add('btn-saving');
+
+  // ── OPTIMISTIC UPDATE ─────────────────────────────────────
+  // Cria objeto temporário com ID fake para exibir imediatamente
+  const tempId = '__opt_' + Date.now();
+  const optimisticTx = {
+    ...payload,
+    id: id || tempId,
+    user_id: S.user.id,
+    profiles: { id: S.user.id, name: S.profile?.name, avatar_color: '#639dff' },
+    created_at: new Date().toISOString(),
+  };
+
+  if (!id) {
+    // Insere no topo do estado local imediatamente
+    S.transactions.unshift(optimisticTx);
+  } else {
+    // Substitui no estado local
+    const idx = S.transactions.findIndex(t => t.id === id);
+    if (idx >= 0) S.transactions[idx] = { ...S.transactions[idx], ...optimisticTx };
   }
-  btn.disabled = false;
+
+  // Fecha modal e reseta para nova transação IMEDIATAMENTE (não espera API)
+  closeModal('modal-tx');
+  if (S.page === 'dashboard') renderDashboard();
+  else if (S.page === 'transacoes') renderTx();
+
+  // Sinaliza operação local para o Realtime não re-disparar
+  S._localOp = true;
+
+  try {
+    let savedTx;
+    if (id) {
+      const { data: d, error } = await sb.from('transactions')
+        .update(payload).eq('id', id)
+        .select('*, profiles!transactions_user_id_fkey(id,name,avatar_color)')
+        .single();
+      if (error) throw error;
+      savedTx = d;
+      // Substitui o optimistic pelo dado real
+      const idx = S.transactions.findIndex(t => t.id === id);
+      if (idx >= 0) S.transactions[idx] = savedTx;
+      toast('Transação atualizada! ✓', 'g');
+    } else {
+      const { data: d, error } = await sb.from('transactions')
+        .insert({ ...payload, user_id: S.user.id })
+        .select('*, profiles!transactions_user_id_fkey(id,name,avatar_color)')
+        .single();
+      if (error) throw error;
+      savedTx = d;
+      // Substitui o item temporário pelo real (com UUID do banco)
+      const idx = S.transactions.findIndex(t => t.id === tempId);
+      if (idx >= 0) S.transactions[idx] = savedTx;
+      else S.transactions.unshift(savedTx);
+      toast('Transação salva! ✓', 'g');
+    }
+
+    // Re-render suave com o dado confirmado pelo banco
+    if (S.page === 'dashboard') renderDashboard();
+    else if (S.page === 'transacoes') renderTx();
+
+    setSyncStatus('live');
+  } catch(e) {
+    // ROLLBACK: remove o optimistic em caso de erro
+    if (!id) {
+      S.transactions = S.transactions.filter(t => t.id !== tempId);
+    } else {
+      // Recarrega do banco para garantir consistência
+      await loadTransactions();
+    }
+    toast('Erro ao salvar: ' + e.message, 'r');
+    if (S.page === 'dashboard') renderDashboard();
+    else if (S.page === 'transacoes') renderTx();
+  } finally {
+    btn.classList.remove('btn-saving');
+    // Libera lock do Realtime após 2s (tempo suficiente para o evento chegar)
+    setTimeout(() => { S._localOp = false; }, 2000);
+  }
 };
 
 window.deleteTx = async function(id) {
   if (!confirm('Excluir esta transação?')) return;
-  const { error } = await sb.from('transactions').delete().eq('id', id);
-  if (error) { toast('Erro ao excluir: '+error.message,'r'); return; }
-  toast('Transação excluída','r');
-  await loadTransactions();
+
+  // Optimistic: remove do estado local imediatamente
+  const backup = S.transactions.find(t => t.id === id);
+  S.transactions = S.transactions.filter(t => t.id !== id);
   if (S.page === 'dashboard') renderDashboard();
-  else renderTx();
+  else if (S.page === 'transacoes') renderTx();
+
+  S._localOp = true;
+  const { error } = await sb.from('transactions').delete().eq('id', id);
+  setTimeout(() => { S._localOp = false; }, 2000);
+
+  if (error) {
+    // ROLLBACK
+    if (backup) S.transactions.unshift(backup);
+    toast('Erro ao excluir: '+error.message,'r');
+    if (S.page === 'dashboard') renderDashboard();
+    else if (S.page === 'transacoes') renderTx();
+    return;
+  }
+  toast('Transação excluída','r');
 };
 
 // ═══════════════════════════════════════
@@ -1674,27 +1777,71 @@ window.saveBill = async function() {
     categoria:  document.getElementById('bill-cat').value,
   };
 
-  const { error } = id
-    ? await sb.from('bills').update(payload).eq('id', id)
-    : await sb.from('bills').insert({ ...payload, user_id: S.user.id, pago: false });
+  // Optimistic: aplica local e fecha modal imediatamente
+  const tempId = '__opt_bill_' + Date.now();
+  const optimistic = { ...payload, id: id || tempId, user_id: S.user.id, pago: false };
+  if (!id) S.bills.push(optimistic);
+  else { const i = S.bills.findIndex(b=>b.id===id); if(i>=0) S.bills[i]={...S.bills[i],...payload}; }
 
-  if (error) { toast('Erro: '+error.message,'r'); return; }
-  toast(id?'Boleto atualizado!':'Boleto criado!','g');
   closeModal('modal-bill');
-  await loadBills();
   renderBills();
+  updateBillsBadge();
+  S._localOp = true;
+
+  const { data: saved, error } = id
+    ? await sb.from('bills').update(payload).eq('id', id).select().single()
+    : await sb.from('bills').insert({ ...payload, user_id: S.user.id, pago: false }).select().single();
+
+  setTimeout(() => { S._localOp = false; }, 2000);
+
+  if (error) {
+    // Rollback
+    S.bills = S.bills.filter(b => b.id !== tempId);
+    if (id) await loadBills();
+    toast('Erro: '+error.message,'r');
+    renderBills();
+    return;
+  }
+
+  // Substitui temporário pelo real
+  const i = S.bills.findIndex(b => b.id === (id || tempId));
+  if (i >= 0) S.bills[i] = saved;
+  else S.bills.push(saved);
+
+  toast(id?'Boleto atualizado! ✓':'Boleto criado! ✓','g');
+  renderBills();
+  updateBillsBadge();
 };
 
 window.markPaid   = async function(id) {
-  const { error } = await sb.from('bills').update({ pago:true, pago_em:new Date().toISOString() }).eq('id',id);
-  if (error) { toast('Erro:'+error.message,'r'); return; }
-  toast('Marcado como pago!','g');
-  await loadBills(); updateBillsBadge();
+  // Optimistic: marca pago localmente e re-renderiza imediatamente
+  const bill = S.bills.find(b=>b.id===id);
+  if (!bill) return;
+  bill.pago = true; bill.pago_em = new Date().toISOString();
+  updateBillsBadge();
   if (S.page==='boletos') renderBills(); else renderDashBills();
+  toast('Marcado como pago! ✓','g');
+
+  S._localOp = true;
+  const { error } = await sb.from('bills').update({ pago:true, pago_em:new Date().toISOString() }).eq('id',id);
+  setTimeout(() => { S._localOp = false; }, 2000);
+  if (error) {
+    // Rollback
+    bill.pago = false; bill.pago_em = null;
+    updateBillsBadge();
+    if (S.page==='boletos') renderBills(); else renderDashBills();
+    toast('Erro ao marcar: '+error.message,'r');
+  }
 };
 window.markUnpaid = async function(id) {
+  const bill = S.bills.find(b=>b.id===id);
+  if (!bill) return;
+  bill.pago = false; bill.pago_em = null;
+  updateBillsBadge(); renderBills();
+
+  S._localOp = true;
   await sb.from('bills').update({ pago:false, pago_em:null }).eq('id',id);
-  await loadBills(); updateBillsBadge(); renderBills();
+  setTimeout(() => { S._localOp = false; }, 2000);
 };
 window.deleteBill = async function(id) {
   if (!confirm('Excluir este boleto?')) return;
@@ -1785,26 +1932,84 @@ window.saveGoal = async function() {
     shared:      document.getElementById('goal-shared').value === 'true',
   };
 
-  const { error } = id
-    ? await sb.from('goals').update(payload).eq('id',id)
-    : await sb.from('goals').insert({ ...payload, user_id: S.user.id });
-  if (error) { toast('Erro: '+error.message,'r'); return; }
-  toast('Meta salva!','g'); closeModal('modal-goal');
-  await loadGoals(); renderGoals();
+  const tempId = '__opt_goal_' + Date.now();
+  const optimistic = { ...payload, id: id || tempId, user_id: S.user.id };
+  if (!id) S.goals.unshift(optimistic);
+  else { const i = S.goals.findIndex(g=>g.id===id); if(i>=0) S.goals[i]={...S.goals[i],...payload}; }
+
+  closeModal('modal-goal');
+  renderGoals();
+  S._localOp = true;
+
+  const { data: saved, error } = id
+    ? await sb.from('goals').update(payload).eq('id',id).select().single()
+    : await sb.from('goals').insert({ ...payload, user_id: S.user.id }).select().single();
+
+  setTimeout(() => { S._localOp = false; }, 2000);
+
+  if (error) {
+    S.goals = S.goals.filter(g => g.id !== tempId);
+    if (id) await loadGoals();
+    toast('Erro: '+error.message,'r');
+    renderGoals();
+    return;
+  }
+  const i = S.goals.findIndex(g => g.id === (id || tempId));
+  if (i >= 0) S.goals[i] = saved; else S.goals.unshift(saved);
+  toast('Meta salva! ✓','g');
+  renderGoals();
 };
 
 window.aporteGoal = async function(id) {
-  const v = prompt('Valor do aporte (R$):');
-  if (!v) return;
-  const val = parseFloat(v.replace(',','.'));
-  if (!val||val<=0) { toast('Valor inválido','w'); return; }
   const g = S.goals.find(x=>x.id===id);
   if (!g) return;
-  const novo = Math.min(g.valor_total, parseFloat(g.valor_atual)+val);
+
+  // Mini-form não bloqueante substituindo prompt()
+  const toastEl = document.createElement('div');
+  toastEl.className = 'toast';
+  toastEl.style.cssText = 'min-width:280px;flex-direction:column;align-items:stretch;gap:10px;pointer-events:all';
+  toastEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px">
+      <i class="bi bi-plus-circle" style="color:var(--b)"></i>
+      Aporte em "${g.nome}"
+    </div>
+    <div style="display:flex;gap:6px">
+      <input id="aporte-val-${id}" type="number" placeholder="R$ 0,00" step="0.01" min="0.01"
+        class="input" style="flex:1;padding:7px 10px;font-size:13px"
+        onkeydown="if(event.key==='Enter')confirmAporte('${id}',this.closest('.toast'))">
+      <button class="btn btn-primary btn-sm" onclick="confirmAporte('${id}',this.closest('.toast'))">OK</button>
+      <button class="btn btn-ghost btn-sm" onclick="this.closest('.toast').remove()">✕</button>
+    </div>`;
+  document.getElementById('toasts').appendChild(toastEl);
+  setTimeout(() => { toastEl.querySelector('input')?.focus(); }, 50);
+  // Auto-remove após 15s sem interação
+  setTimeout(() => toastEl.remove(), 15000);
+};
+
+window.confirmAporte = async function(id, toastEl) {
+  const input = toastEl.querySelector('input');
+  const val = parseFloat((input?.value||'').replace(',','.'));
+  if (!val||val<=0) { input?.focus(); return; }
+  toastEl.remove();
+
+  const g = S.goals.find(x=>x.id===id);
+  if (!g) return;
+  const novo = Math.min(parseFloat(g.valor_total), parseFloat(g.valor_atual)+val);
+
+  // Optimistic
+  g.valor_atual = novo;
+  renderGoals();
+
+  S._localOp = true;
   const { error } = await sb.from('goals').update({ valor_atual: novo }).eq('id',id);
-  if (error) { toast('Erro: '+error.message,'r'); return; }
-  toast(`Aporte de ${brl(val)} registrado!`,'g');
-  await loadGoals(); renderGoals();
+  setTimeout(() => { S._localOp = false; }, 2000);
+
+  if (error) {
+    await loadGoals(); renderGoals();
+    toast('Erro: '+error.message,'r');
+    return;
+  }
+  toast(`Aporte de ${brl(val)} registrado! ✓`,'g');
 };
 
 window.deleteGoal = async function(id) {
@@ -1860,13 +2065,31 @@ window.saveBudget = async function() {
   const cat = document.getElementById('bud-cat').value;
   const val = parseFloat(document.getElementById('bud-val').value);
   if (!val||val<=0) { toast('Valor inválido','w'); return; }
-  const { error } = await sb.from('budgets').upsert(
+
+  // Optimistic: atualiza estado local imediatamente
+  const existing = S.budgets.findIndex(b => b.categoria === cat);
+  const tempBud = { id: '__opt_bud_'+Date.now(), user_id: S.user.id, categoria: cat, valor_limite: val, mes: nowMonth(), shared: false };
+  if (existing >= 0) S.budgets[existing] = { ...S.budgets[existing], valor_limite: val };
+  else S.budgets.push(tempBud);
+
+  closeModal('modal-budget');
+  renderBudgets();
+
+  const { data: saved, error } = await sb.from('budgets').upsert(
     { user_id: S.user.id, categoria: cat, valor_limite: val, mes: nowMonth(), shared: false },
     { onConflict: 'user_id,categoria,mes' }
-  );
-  if (error) { toast('Erro: '+error.message,'r'); return; }
-  toast('Orçamento salvo!','g'); closeModal('modal-budget');
-  await loadBudgets(); renderBudgets();
+  ).select().single();
+
+  if (error) {
+    await loadBudgets(); renderBudgets();
+    toast('Erro: '+error.message,'r');
+    return;
+  }
+  // Substitui temporário pelo real
+  const i = S.budgets.findIndex(b => b.id === tempBud.id || (b.categoria===cat && b.mes===nowMonth()));
+  if (i >= 0) S.budgets[i] = saved;
+  toast('Orçamento salvo! ✓','g');
+  renderBudgets();
 };
 
 window.deleteBudget = async function(id) {
@@ -2012,32 +2235,87 @@ window.toggleTheme = function() {
 // ═══════════════════════════════════════
 // MODAL
 // ═══════════════════════════════════════
-window.closeModal = function(id) { document.getElementById(id).classList.remove('show'); };
+window.closeModal = function(id) {
+  document.getElementById(id).classList.remove('show');
+  // Re-habilita scroll do body no mobile
+  if (!document.querySelector('.modal.show')) {
+    document.body.classList.remove('modal-open');
+  }
+};
+
+// Intercepta abertura de modais para travar scroll no mobile
+document.querySelectorAll('.modal').forEach(m => {
+  const obs = new MutationObserver(() => {
+    if (m.classList.contains('show')) document.body.classList.add('modal-open');
+    else if (!document.querySelector('.modal.show')) document.body.classList.remove('modal-open');
+  });
+  obs.observe(m, { attributes: true, attributeFilter: ['class'] });
+});
 
 // ═══════════════════════════════════════
 // TOAST
 // ═══════════════════════════════════════
-window.toast = function(msg, type='b') {
+window.toast = function(msg, type='b', duration=3500) {
   const ico  = {g:'bi-check-circle',r:'bi-x-circle',w:'bi-exclamation-triangle',b:'bi-info-circle'};
   const clr  = {g:'var(--g)',r:'var(--r)',w:'var(--y)',b:'var(--b)'};
   const c    = document.getElementById('toasts');
+
+  // Máximo de 4 toasts visíveis ao mesmo tempo
+  const existing = c.querySelectorAll('.toast');
+  if (existing.length >= 4) existing[0].remove();
+
   const el   = document.createElement('div');
   el.className = 'toast';
-  el.innerHTML = `<i class="bi ${ico[type]||ico.b}" style="color:${clr[type]||clr.b};font-size:15px;flex-shrink:0"></i><span>${msg}</span>`;
+  el.innerHTML = `
+    <i class="bi ${ico[type]||ico.b}" style="color:${clr[type]||clr.b};font-size:15px;flex-shrink:0"></i>
+    <span style="flex:1">${msg}</span>
+    <button onclick="this.parentElement.remove()" style="background:none;border:none;cursor:pointer;color:var(--txt3);font-size:14px;padding:0 0 0 4px;line-height:1">✕</button>
+    <div class="toast-progress" style="color:${clr[type]||clr.b}"></div>`;
   c.appendChild(el);
-  setTimeout(()=>{el.style.transition='.3s ease';el.style.opacity='0';el.style.transform='translateX(100%)';setTimeout(()=>el.remove(),300);},3500);
+
+  // Clique no toast também o fecha
+  el.addEventListener('click', (e) => { if(e.target.tagName!=='BUTTON') el.remove(); });
+
+  const tid = setTimeout(()=>{
+    el.style.transition='.3s ease';
+    el.style.opacity='0';
+    el.style.transform='translateX(110%)';
+    setTimeout(()=>el.remove(),300);
+  }, duration);
+
+  // Pausar auto-dismiss no hover
+  el.addEventListener('mouseenter', () => clearTimeout(tid));
+  el.addEventListener('mouseleave', () => {
+    setTimeout(()=>{
+      el.style.transition='.3s ease';
+      el.style.opacity='0';
+      el.style.transform='translateX(110%)';
+      setTimeout(()=>el.remove(),300);
+    }, 1500);
+  });
 };
 
 // ═══════════════════════════════════════
 // GLOBAL SEARCH
 // ═══════════════════════════════════════
-window.onGlobalSearch = function(v) {
+// Debounce genérico reutilizável
+function debounce(fn, delay=300) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
+}
+
+window.onGlobalSearch = debounce(function(v) {
   if (S.page==='transacoes') renderTx();
   else if (v.length>1) {
     nav('transacoes');
     setTimeout(()=>{ document.getElementById('tx-search').value=v; renderTx(); }, 100);
   }
-};
+}, 250);
+
+// Aplica debounce também no campo de busca de transações
+document.getElementById('tx-search')?.addEventListener('input', debounce(() => {
+  if (S.page==='transacoes') renderTx();
+}, 250));
 
 // ═══════════════════════════════════════
 // HELPERS
@@ -2088,6 +2366,63 @@ init();
 </script>
 
 <style>
+
+/* ═══ PERFORMANCE PATCHES ═══════════════════════════════════ */
+
+/* Botão saving state */
+.btn-saving {
+  position: relative;
+  pointer-events: none;
+  opacity: .8;
+}
+.btn-saving::after {
+  content: '';
+  position: absolute;
+  right: 12px; top: 50%;
+  transform: translateY(-50%);
+  width: 13px; height: 13px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .6s linear infinite;
+}
+
+/* Skeleton loader para listas */
+.skeleton {
+  background: linear-gradient(90deg, var(--bg2) 25%, var(--bg3) 50%, var(--bg2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+  border-radius: 8px;
+}
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+.skeleton-row { height: 56px; margin-bottom: 6px; }
+.skeleton-card { height: 80px; margin-bottom: 10px; }
+
+/* Optimistic: item recém adicionado pisca uma vez */
+.tx-item-new {
+  animation: highlightNew .8s ease forwards;
+}
+@keyframes highlightNew {
+  0%   { background: rgba(99,157,255,.18); }
+  100% { background: transparent; }
+}
+
+/* Toast com barra de progresso */
+.toast-progress {
+  position: absolute;
+  bottom: 0; left: 0;
+  height: 2px;
+  background: currentColor;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  animation: toastBar 3.5s linear forwards;
+  opacity: .5;
+}
+@keyframes toastBar { from{width:100%} to{width:0%} }
+.toast { position: relative; overflow: hidden; }
+
+/* Modal não trava scroll do fundo no mobile */
+body.modal-open { overflow: hidden; touch-action: none; }
+
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 </style>
 </body>
